@@ -1,6 +1,7 @@
 import os
 import base64
 import httpx
+import asyncio
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,6 +11,7 @@ import uvicorn
 
 app = FastAPI()
 
+# --- MODÈLE DE DONNÉES ---
 class CompteRendu(BaseModel):
     date_cr: str; entite: str; escale: str
     retard: bool; reclam_cie: bool; impact_secu: bool; dysfonc: bool
@@ -24,35 +26,26 @@ class CompteRendu(BaseModel):
     dsac: bool; bea: bool; nav_air: bool; autre: bool
     sig_qse_nom: str; sig_qse_box: str
 
-
+# --- FONCTION D'ENVOI VIA SENDGRID ---
 async def envoyer_email_sendgrid(fichier_path, data):
     API_KEY = os.environ.get("SENDGRID_API_KEY")
     if not API_KEY:
-        print("Erreur : Clé API SendGrid manquante dans les variables d'environnement.")
+        print("Erreur : SENDGRID_API_KEY manquante sur Render.")
         return False
 
     with open(fichier_path, "rb") as f:
         encoded_pdf = base64.b64encode(f.read()).decode()
 
-    # --- CONFIGURATION DES DESTINATAIRES ---
-    # Pour ajouter une adresse plus tard, ajoutez simplement : {"email": "nouvelle.adresse@alyzia.com"}
+    # Liste des destinataires (facile à modifier plus tard)
     destinataires = [
         {"email": "xavier.oliere@alyzia.com"}
     ]
 
     payload = {
-        "personalizations": [{
-            "to": destinataires
-        }],
-        "from": {
-            "email": "alyzia.cdg2@gmail.com", 
-            "name": "CRE- ALYZIA"
-        },
+        "personalizations": [{"to": destinataires}],
+        "from": {"email": "alyzia.cdg2@gmail.com", "name": "CRE- ALYZIA"},
         "subject": f"CRE ALYZIA - {data.escale.upper()} - {data.compagnie.upper()}",
-        "content": [{
-            "type": "text/plain", 
-            "value": f"Nouveau CRE rédigé par {data.sig_redacteur_nom}."
-        }],
+        "content": [{"type": "text/plain", "value": f"Nouveau CRE rédigé par {data.sig_redacteur_nom}."}],
         "attachments": [{
             "content": encoded_pdf,
             "filename": os.path.basename(fichier_path),
@@ -65,44 +58,53 @@ async def envoyer_email_sendgrid(fichier_path, data):
         r = await client.post(
             "https://api.sendgrid.com/v3/mail/send",
             json=payload,
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json"
-            }
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
         )
         return r.status_code < 400
 
+# --- GÉNÉRATION DU PDF AVEC INJECTION ---
 async def generer_pdf_cre(data: CompteRendu):
     fichier = f"CRE_{data.escale}.pdf"
-    # On force la langue française pour le format de date et d'heure
-    browser = await launch(args=['--no-sandbox', '--lang=fr-FR'])
+    data_json = data.model_dump_json()
+    
+    # Lancement du navigateur (force la langue FR pour les dates/heures)
+    browser = await launch(args=['--no-sandbox', '--disable-setuid-sandbox', '--lang=fr-FR'])
     try:
         page = await browser.newPage()
         await page.setExtraHTTPHeaders({'Accept-Language': 'fr-FR'})
         
-        # Charger la page
+        # URL locale de Render (port 10000)
         await page.goto('http://localhost:10000', {'waitUntil': 'networkidle0', 'timeout': 60000})
         
-        # 🔥 ÉTAPE CRUCIALE : Injecter les données dans la page
-        # On transforme l'objet Python en JSON pour le JavaScript
-        data_json = data.model_dump_json()
-        
+        # Injection des données et correctif visuel pour l'heure
         await page.evaluate(f"""(d_str) => {{
             const d = JSON.parse(d_str);
+
+            // Correctif pour que l'heure ne soit pas coupée (supprime l'icône horloge native)
+            const style = document.createElement('style');
+            style.innerHTML = `
+                input[type="time"]::-webkit-calendar-picker-indicator {{ display: none !important; }}
+                input[type="time"] {{ width: 100% !important; border: none !important; font-size: 10pt !important; padding: 0 !important; }}
+            `;
+            document.head.appendChild(style);
+
             const setV = (id, v) => {{ 
                 const el = document.getElementById(id);
-                if(el) {{ el.value = v; el.dispatchEvent(new Event('input')); }} 
+                if(el) {{ 
+                    el.value = v; 
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }})); 
+                }} 
             }};
             const setC = (id, v) => {{ 
                 const el = document.getElementById(id);
-                if(el) {{ el.checked = v; el.dispatchEvent(new Event('change')); }} 
+                if(el) {{ el.checked = v; el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} 
             }};
             const setT = (id, v) => {{ 
                 const el = document.getElementById(id);
                 if(el) {{ el.innerText = v; }} 
             }};
 
-            // Remplissage des champs
+            // Remplissage des champs texte/date
             setV('date_cr', d.date_cr);
             setV('entite', d.entite);
             setV('escale', d.escale);
@@ -119,24 +121,24 @@ async def generer_pdf_cre(data: CompteRendu):
             setV('sig_redacteur_nom', d.sig_redacteur_nom);
             setT('sig_redacteur_box', d.sig_redacteur_box);
             
-            // Checkboxes
+            // Remplissage des cases à cocher
             setC('retard', d.retard);
             setC('reclam_cie', d.reclam_cie);
             setC('impact_secu', d.impact_secu);
             setC('dysfonc', d.dysfonc);
             
-            // Partie Analyse
+            // Partie Analyse et signatures
             setV('analyse_encadrement', d.analyse_encadrement);
             setV('sig_encadre_nom', d.sig_encadre_nom);
             setT('sig_encadre_box', d.sig_encadre_box);
             setV('analyse_qse_text', d.analyse_qse_text);
-            setV('sig_qse_nom', d.sig_qse_nom);
-            setT('sig_qse_box', d.sig_qse_box);
+            setC('cl_ev', d.cl_ev); setC('cl_inc', d.cl_inc); setC('cl_inc_g', d.cl_inc_g); setC('cl_acc', d.cl_acc);
+            setC('st_clos_s', d.st_clos_s); setC('st_ouvert', d.st_ouvert); setC('st_clos_d', d.st_clos_d);
+            setV('sig_qse_nom', d.sig_qse_nom); setT('sig_qse_box', d.sig_qse_box);
         }}""", data_json)
 
-        # Laisser un court instant pour que le rendu se fasse
-        import asyncio
-        await asyncio.sleep(1) 
+        # Attente pour s'assurer que le rendu est fini
+        await asyncio.sleep(1)
 
         await page.pdf({
             'path': fichier,
@@ -148,15 +150,23 @@ async def generer_pdf_cre(data: CompteRendu):
         await browser.close()
     return fichier
 
+# --- ROUTES API ---
 @app.post("/submit")
 async def submit(data: CompteRendu, action: str = Query("pdf")):
     pdf_path = await generer_pdf_cre(data)
+    
     if action == "email":
         success = await envoyer_email_sendgrid(pdf_path, data)
-        if os.path.exists(pdf_path): os.remove(pdf_path)
-        return {"status": "success" if success else "error"}
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path) # Supprime le fichier après envoi
+        if success:
+            return {"status": "success"}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error"})
+
     return FileResponse(pdf_path)
 
+# Montage des fichiers statiques (HTML, CSS, JS)
 app.mount("/", StaticFiles(directory=".", html=True), name="static")
 
 if __name__ == "__main__":
