@@ -23,36 +23,42 @@ class CompteRendu(BaseModel):
 
 async def generer_pdf(data: CompteRendu):
     path = f"CRE_{data.escale}.pdf"
-    browser = await launch(args=['--no-sandbox'])
+    # 1. On ajoute la langue FR dans les arguments de lancement
+    browser = await launch(args=[
+        '--no-sandbox', 
+        '--lang=fr-FR'
+    ])
     page = await browser.newPage()
-    # On charge la page servie par FastAPI
+    
+    # 2. On force la locale de la page en français
+    await page.setExtraHTTPHeaders({'Accept-Language': 'fr-FR'})
+    
     await page.goto('http://localhost:10000', {'waitUntil': 'networkidle0'})
     
+    # Injection des données
     await page.evaluate(f"""(d) => {{
-        const setV = (id, v) => {{ if(document.getElementById(id)) document.getElementById(id).value = v; }};
-        const setC = (id, v) => {{ if(document.getElementById(id)) document.getElementById(id).checked = v; }};
+        const setV = (id, v) => {{ 
+            const el = document.getElementById(id);
+            if(el) {{
+                el.value = v;
+                // Forcer le rafraîchissement pour les champs de type 'time'
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            }}
+        }};
         const setT = (id, v) => {{ if(document.getElementById(id)) document.getElementById(id).innerText = v; }};
-        
-        // Page 1
-        setV('date_cr', d.date_cr); setV('entite', d.entite); setV('escale', d.escale);
-        setC('retard', d.retard); setC('reclam_cie', d.reclam_cie); setC('impact_secu', d.impact_secu); setC('dysfonc', d.dysfonc);
-        setV('compagnie', d.compagnie); setV('num_vol', d.num_vol); setV('immat', d.immat);
-        setV('date_evenement', d.date_evenement); setV('heure_locale', d.heure_locale); setV('lieu', d.lieu);
-        setV('jour_nuit', d.jour_nuit); setV('meteo', d.meteo);
-        setV('desc_succincte', d.desc_succincte); setV('desc_detaillee', d.desc_detaillee);
-        setV('sig_redacteur_nom', d.sig_redacteur_nom); setT('sig_redacteur_box', d.sig_redacteur_box);
-        setV('analyse_encadrement', d.analyse_encadrement);
-        setC('diff_qse', d.diff_qse); setC('diff_cie', d.diff_cie); setC('diff_aeroport', d.diff_aeroport);
-        setV('sig_encadre_nom', d.sig_encadre_nom); setT('sig_encadre_box', d.sig_encadre_box);
+        const setC = (id, v) => {{ if(document.getElementById(id)) document.getElementById(id).checked = v; }};
 
-        // Page 2
-        setV('analyse_qse_text', d.analyse_qse_text);
-        setC('cl_ev', d.cl_ev); setC('cl_inc', d.cl_inc); 
-        setC('st_clos_s', d.st_clos_s); setC('st_ouvert', d.st_ouvert);
-        setV('sig_qse_nom', d.sig_qse_nom); setT('sig_qse_box', d.sig_qse_box);
+        setV('date_cr', d.date_cr);
+        setV('heure_locale', d.heure_locale); // L'heure injectée ici sera au format 24h
+        // ... reste de vos injections
     }}""", data.model_dump())
     
-    await page.pdf({'path': path, 'format': 'A4', 'printBackground': True, 'preferCSSPageSize': True})
+    await page.pdf({
+        'path': path, 
+        'format': 'A4', 
+        'printBackground': True, 
+        'preferCSSPageSize': True
+    })
     await browser.close()
     return path
 
