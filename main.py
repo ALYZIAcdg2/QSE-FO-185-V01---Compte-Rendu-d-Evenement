@@ -24,24 +24,56 @@ class CompteRendu(BaseModel):
     dsac: bool; bea: bool; nav_air: bool; autre: bool
     sig_qse_nom: str; sig_qse_box: str
 
+
 async def envoyer_email_sendgrid(fichier_path, data):
     API_KEY = os.environ.get("SENDGRID_API_KEY")
-    if not API_KEY: return False
+    if not API_KEY:
+        print("Erreur : Clé API SendGrid manquante dans les variables d'environnement.")
+        return False
+
     with open(fichier_path, "rb") as f:
         encoded_pdf = base64.b64encode(f.read()).decode()
+
+    # --- CONFIGURATION DES DESTINATAIRES ---
+    # Pour ajouter une adresse plus tard, ajoutez simplement : {"email": "nouvelle.adresse@alyzia.com"}
+    destinataires = [
+        {"email": "xavier.oliere@alyzia.com"}
+    ]
+
     payload = {
-        "personalizations": [{"to": [{"email": "xavier.oliere@alyzia.com"}, {"email": "bureau.sgs@alyzia.com"}]}],
-        "from": {"email": "alyzia.cdg2@gmail.com", "name": "SGS ALYZIA - CRE"},
+        "personalizations": [{
+            "to": destinataires
+        }],
+        "from": {
+            "email": "alyzia.cdg2@gmail.com", 
+            "name": "CRE- ALYZIA"
+        },
         "subject": f"CRE ALYZIA - {data.escale.upper()} - {data.compagnie.upper()}",
-        "content": [{"type": "text/plain", "value": f"Nouveau CRE rédigé par {data.sig_redacteur_nom}."}],
-        "attachments": [{"content": encoded_pdf, "filename": os.path.basename(fichier_path), "type": "application/pdf"}]
+        "content": [{
+            "type": "text/plain", 
+            "value": f"Nouveau CRE rédigé par {data.sig_redacteur_nom}."
+        }],
+        "attachments": [{
+            "content": encoded_pdf,
+            "filename": os.path.basename(fichier_path),
+            "type": "application/pdf",
+            "disposition": "attachment"
+        }]
     }
+
     async with httpx.AsyncClient() as client:
-        r = await client.post("https://api.sendgrid.com/v3/mail/send", json=payload, headers={"Authorization": f"Bearer {API_KEY}"})
+        r = await client.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json"
+            }
+        )
         return r.status_code < 400
 
 async def generer_pdf_cre(data: CompteRendu):
-    fichier = f"CRE_{data.escale}.pdf"
+    fichier = f"CRE ALYZIA_{data.escale}.pdf"
     browser = await launch(args=['--no-sandbox', '--lang=fr-FR'])
     try:
         page = await browser.newPage()
